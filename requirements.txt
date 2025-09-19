@@ -1,4 +1,26 @@
-streamlit==1.28.1
-pandas==1.5.3
-numpy==1.24.3
-plotly==5.15.0
+# =========================================================
+# Safe requirements template for NumPy on Python 3.9–3.13+
+# This prevents the "distutils" build error on Python >= 3.12
+# =========================================================
+
+# --- NumPy ---
+# Use modern NumPy for Python >= 3.12 (distutils removed)
+numpy>=1.25; python_version >= "3.12"
+
+# Allow older NumPy (down to 1.21) for older Python versions
+numpy>=1.21,<1.25; python_version < "3.12"
+
+# --- Build tools ---
+# setuptools 68+ does not rely on distutils internally
+setuptools>=68
+
+# Keep pip and wheel modern for binary builds
+pip>=23
+wheel>=0.40
+
+# =========================================================
+# Add your other dependencies below
+# e.g.,
+# pandas>=2.0
+# scipy>=1.10
+# =========================================================
