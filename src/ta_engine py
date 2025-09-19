@@ -1,1 +1,89 @@
+import numpy as np
+import pandas as pd
+from typing import Dict, List, Optional
 
+def calculate_momentum_indicators(series: np.array, period: int = 2) -> Dict[str, float]:
+    if len(series) < period + 1:
+        return {'MOM_V': None, 'MOM_A': None}
+        
+    mom_v = (series[-1] - series[-period-1]) / period
+    
+    if len(series) >= 2 * period + 1:
+        prev_mom_v = (series[-period-1] - series[-2*period-1]) / period
+        mom_a = (mom_v - prev_mom_v) / period
+    else:
+        mom_a = None
+        
+    return {'MOM_V': mom_v, 'MOM_A': mom_a}
+
+def calculate_rsi(series: np.array, period: int = 14) -> float:
+    if len(series) < period + 1:
+        return None
+        
+    deltas = np.diff(series)
+    
+    gains = np.where(deltas > 0, deltas, 0)
+    losses = np.where(deltas < 0, -deltas, 0)
+    
+    avg_gains = np.mean(gains[-period:])
+    avg_losses = np.mean(losses[-period:])
+    
+    if avg_losses == 0:
+        return 100
+        
+    rs = avg_gains / avg_losses
+    rsi = 100 - (100 / (1 + rs))
+    
+    return rsi
+
+def adaptive_moving_average(series: np.array, base_period: int = 10, 
+                           max_period: int = 30, sensitivity: float = 2.0) -> np.array:
+    if len(series) < base_period:
+        return np.array([np.nan] * len(series))
+    
+    volatility = np.std(series[-base_period:])
+    if volatility == 0:
+        efficiency_ratio = 0
+    else:
+        direction = np.abs(series[-1] - series[-base_period])
+        efficiency_ratio = direction / (volatility * np.sqrt(base_period))
+    
+    adaptive_period = base_period + int((max_period - base_period) * efficiency_ratio * sensitivity)
+    adaptive_period = min(max(adaptive_period, base_period), max_period)
+    
+    if len(series) >= adaptive_period:
+        adaptive_ma = np.mean(series[-adaptive_period:])
+    else:
+        adaptive_ma = np.mean(series)
+    
+    return adaptive_ma
+
+def calculate_ta_indicators(series_data: List[Dict], field: str) -> Dict:
+    if not series_data or len(series_data) < 2:
+        return {}
+    
+    values = []
+    timestamps = []
+    
+    for data_point in series_data:
+        if field in data_point and data_point[field] is not None:
+            values.append(data_point[field])
+            timestamps.append(data_point.get('parsed_at', ''))
+    
+    if len(values) < 2:
+        return {}
+    
+    values = np.array(values)
+    
+    momentum = calculate_momentum_indicators(values)
+    rsi_value = calculate_rsi(values)
+    adaptive_ma = adaptive_moving_average(values)
+    
+    return {
+        'momentum': momentum,
+        'rsi': rsi_value,
+        'adaptive_ma': adaptive_ma,
+        'current_value': values[-1],
+        'previous_value': values[-2] if len(values) > 1 else None,
+        'data_points': len(values)
+    }
