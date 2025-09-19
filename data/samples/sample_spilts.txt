@@ -1,1 +1,8 @@
-
+Some header text
+More header text
+Additional info
+65%
+35%
+40%
+60%
+Footer text
