@@ -2,464 +2,374 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 from datetime import datetime
-import json
-import sys
-import os
+import re
+from typing import List, Dict, Tuple, Optional, Any
+import math
 
-# Add the current directory to path to import our modules
-sys.path.append(os.path.dirname(__file__))
+# Import our custom modules
+from ta_engine import TechnicalAnalysisEngine
+from betting_analyzer import BettingAnalyzer
+from recommendations_engine import RecommendationsEngine
+from backtester import Backtester
 
-# Import our engines
-from odds_parser import OddsParser
-from ta_engine import AdvancedTechnicalAnalysis, TradingSignal
-from recommendations_engine import RecommendationsEngine, BetRecommendation
+# Initialize engines
+ta_engine = TechnicalAnalysisEngine()
+betting_analyzer = BettingAnalyzer()
+recommendations_engine = RecommendationsEngine()
+backtester = Backtester()
 
-# Configure the page
+# Streamlit app
 st.set_page_config(
-    page_title="Omniscience Odds TA",
-    page_icon="⚡",
-    layout="wide",
-    initial_sidebar_state="expanded"
+    page_title="Omniscience - Enhanced TA Engine",
+    page_icon="📊",
+    layout="wide"
 )
 
-# Custom CSS for professional appearance
+st.title("Omniscience — Enhanced TA Engine (EV + Kelly + Backtesting)")
+st.markdown("""
+    **Professional Sports Betting Analysis Tool**
+    
+    Paste odds feed in the format:
+    - Line 1: Time [Team] Spread
+    - Line 2: Spread Vig
+    - Line 3: Total (e.g. O 154.5 / U 154.5)
+    - Line 4: Total Vig
+    - Line 5: Away ML Home ML
+""")
+
+# Bankroll management
+bankroll = st.number_input("Bankroll ($)", value=1000.0, min_value=1.0, step=100.0)
+
+# Data input
+st.subheader("Odds Feed Input")
+raw_data = st.text_area(
+    "Paste odds data here (first line should be header)",
+    height=300,
+    placeholder="time 10/15 12:00PM\nLAC -3.5\n-110\nO 154.5\n-110\n-120 105\n\n"
+)
+
+# Process data
+if st.button("Analyze"):
+    if not raw_data.strip():
+        st.error("Please paste odds data first.")
+    else:
+        # Parse the data
+        try:
+            parsed_data = parse_blocks_strict(raw_data)
+            if not parsed_data:
+                st.error("No valid data blocks found. Ensure first line is header and each block has 5 lines.")
+            else:
+                # Analyze with all engines
+                analysis_result = analyze_with_all_engines(parsed_data, bankroll)
+                
+                # Display results
+                st.subheader("Analysis Results")
+                st.markdown(analysis_result['html'])
+                
+                # Display recommendation
+                st.subheader("Professional Recommendation")
+                st.markdown(f"<div style='background: linear-gradient(90deg, #0a2c3d, #082230); padding: 15px; border-radius: 8px; border-left: 4px solid #7ee3d0;'><h3 style='color: #7ee3d0; margin-top: 0;'>{analysis_result['rec']}</h3><p style='color: #e6f7f6;'>Confidence: {analysis_result['conf']}</p></div>", unsafe_allow_html=True)
+                
+                # Display parsed preview
+                st.subheader("Parsed Data Preview")
+                preview_df = pd.DataFrame([
+                    {
+                        'Time': row['time'].strftime('%m/%d %H:%M'),
+                        'Team': row['team'] or '',
+                        'Spread': row['spread'],
+                        'SpreadVig': row['spread_vig'],
+                        'Total': row['total'],
+                        'TotalVig': row['total_vig'],
+                        'AwayML': row['ml_away'],
+                        'HomeML': row['ml_home'],
+                        'AwayML Prob': f"{row['ml_away_prob']*100:.1f}%" if row['ml_away_prob'] is not None else '',
+                        'HomeML Prob': f"{row['ml_home_prob']*100:.1f}%" if row['ml_home_prob'] is not None else ''
+                    }
+                    for row in parsed_data
+                ])
+                st.dataframe(preview_df, use_container_width=True)
+                
+        except Exception as e:
+            st.error(f"Error processing data: {str(e)}")
+
+# Backtesting
+if st.button("Run Backtest"):
+    if not raw_data.strip():
+        st.error("Please paste odds data first.")
+    else:
+        try:
+            parsed_data = parse_blocks_strict(raw_data)
+            if not parsed_data:
+                st.error("No valid data blocks found.")
+            else:
+                backtest_result = backtester.run_backtest(parsed_data, bankroll)
+                st.subheader("Backtest Results")
+                st.markdown(backtest_result['html'])
+        except Exception as e:
+            st.error(f"Error running backtest: {str(e)}")
+
+# Function to parse blocks
+def parse_blocks_strict(raw: str) -> List[Dict]:
+    """Parse raw odds data into structured format"""
+    lines = [line.strip() for line in raw.split('\n') if line.strip()]
+    start = 1 if is_header_line(lines[0]) else 0
+    rows = []
+    errors = []
+
+    for i in range(start, len(lines) - 4, 5):
+        try:
+            block_lines = lines[i:i+5]
+            if len(block_lines) < 5:
+                break
+                
+            L1, L2, L3, L4, L5 = block_lines
+            
+            # Parse timestamp
+            tks = L1.split()
+            if len(tks) < 2:
+                errors.append({
+                    'index': i,
+                    'reason': 'Invalid timestamp format',
+                    'raw': block_lines
+                })
+                continue
+                
+            date_token = tks[0]
+            time_token = tks[1]
+            full_timestamp = f"{date_token} {time_token}"
+            
+            time = parse_timestamp(full_timestamp)
+            if time is None:
+                errors.append({
+                    'index': i,
+                    'reason': 'Invalid timestamp',
+                    'raw': block_lines
+                })
+                continue
+
+            # Team and spread extraction
+            team = None
+            spread_raw = None
+            
+            if len(tks) >= 3:
+                if has_letters(tks[2]):
+                    team = tks[2]
+                    spread_raw = tks[3] if len(tks) > 3 else None
+                else:
+                    spread_raw = tks[2]
+            
+            spread = normalize_spread(spread_raw) if spread_raw else None
+
+            # Spread vig - extract first number and calculate opposite
+            spread_vig = extract_first_number(L2)
+            spread_vig_opposite = calculate_opposite_vig(spread_vig) if spread_vig is not None else None
+
+            # Total parsing
+            total_side = None
+            total = None
+            
+            m = re.match(r'^([ouOU])\s*([+-]?\d+(?:\.\d+)?)', L3)
+            if m:
+                total_side = m.group(1).lower()
+                total = float(m.group(2))
+            else:
+                total = extract_first_number(L3)
+                if L3 and L3[0].lower() in ['o', 'u']:
+                    total_side = L3[0].lower()
+
+            # Total vig - extract first number and calculate opposite
+            total_vig = extract_first_number(L4)
+            total_vig_opposite = calculate_opposite_vig(total_vig) if total_vig is not None else None
+
+            # Moneylines parsing
+            ml_nums = extract_numbers(L5)
+            ml_away = None
+            ml_home = None
+            
+            if 'even' in L5.lower():
+                ml_away = 'even'
+                remaining = L5.split('even')[1]
+                ml_home = extract_first_number(remaining)
+            else:
+                if len(ml_nums) >= 1:
+                    ml_away = ml_nums[0]
+                if len(ml_nums) >= 2:
+                    ml_home = ml_nums[1]
+
+            # Calculate no-vig probabilities
+            spread_no_vig = None
+            total_no_vig = None
+            ml_no_vig = None
+            
+            if spread_vig is not None and spread_vig_opposite is not None:
+                spread_no_vig = betting_analyzer.calculate_no_vig_probability(str(spread_vig), str(spread_vig_opposite))
+            
+            if total_vig is not None and total_vig_opposite is not None:
+                total_no_vig = betting_analyzer.calculate_no_vig_probability(str(total_vig), str(total_vig_opposite))
+            
+            if ml_away is not None and ml_home is not None:
+                ml_no_vig = betting_analyzer.calculate_no_vig_probability(ml_away, str(ml_home))
+
+            # Store all values
+            rows.append({
+                'time': time,
+                'team': team,
+                'spread': spread,
+                'spread_vig': spread_vig,
+                'spread_vig_opposite': spread_vig_opposite,
+                'spread_no_vig': spread_no_vig,
+                'total': total,
+                'total_side': total_side,
+                'total_vig': total_vig,
+                'total_vig_opposite': total_vig_opposite,
+                'total_no_vig': total_no_vig,
+                'ml_away': ml_away,
+                'ml_home': ml_home,
+                'ml_no_vig': ml_no_vig,
+                'raw': block_lines,
+                'ml_away_prob': betting_analyzer.implied_probability(ml_away) if ml_away is not None else None,
+                'ml_home_prob': betting_analyzer.implied_probability(ml_home) if ml_home is not None else None
+            })
+            
+        except Exception as e:
+            errors.append({
+                'index': i,
+                'reason': f'Parsing error: {str(e)}',
+                'raw': block_lines
+            })
+            continue
+    
+    # Sort by time
+    rows.sort(key=lambda x: x['time'])
+    return rows
+
+# Helper functions
+def is_header_line(line: str) -> bool:
+    """Check if line is a header line"""
+    return line.lower().startswith('time')
+
+def has_letters(s: str) -> bool:
+    """Check if string contains letters"""
+    return bool(re.search(r'[A-Za-z]', s))
+
+def normalize_spread(spread_str: str) -> Optional[float]:
+    """Normalize spread value, preserving directional meaning"""
+    try:
+        if spread_str == 'even':
+            return 100.0  # Convert even to +100 for TA purposes
+        val = float(spread_str)
+        # Return as-is since we want to preserve the directional meaning
+        return val
+    except ValueError:
+        return None
+
+def extract_numbers(s: str) -> List[float]:
+    """Extract all numbers from a string"""
+    numbers = re.findall(r'[+-]?\d+(?:\.\d+)?', s)
+    return [float(x) for x in numbers]
+
+def extract_first_number(s: str) -> Optional[float]:
+    """Extract first number from a string"""
+    numbers = extract_numbers(s)
+    return numbers[0] if numbers else None
+
+def parse_timestamp(time_str: str) -> Optional[datetime]:
+    """Parse timestamp in MM/DD h:mmAM/PM format"""
+    try:
+        # Handle both formats: MM/DD h:mmAM/PM and MM/DD h:mm
+        if 'AM' in time_str or 'PM' in time_str:
+            # MM/DD h:mmAM/PM format
+            parts = time_str.split()
+            if len(parts) < 2:
+                return None
+            date_part = parts[0]
+            time_part = parts[1]
+            # Parse date
+            month, day = map(int, date_part.split('/'))
+            # Parse time
+            time_only, period = time_part[:-2], time_part[-2:]
+            hour, minute = map(int, time_only.split(':'))
+            
+            if period.upper() == 'PM' and hour < 12:
+                hour += 12
+            elif period.upper() == 'AM' and hour == 12:
+                hour = 0
+                
+            return datetime(2000, month, day, hour, minute, 0, 0)
+        else:
+            # MM/DD h:mm format
+            parts = time_str.split()
+            if len(parts) < 2:
+                return None
+            date_part = parts[0]
+            time_part = parts[1]
+            month, day = map(int, date_part.split('/'))
+            hour, minute = map(int, time_part.split(':'))
+            return datetime(2000, month, day, hour, minute, 0, 0)
+    except Exception:
+        return None
+
+def calculate_opposite_vig(vig: float) -> float:
+    """Calculate opposite vig using standard dime line system"""
+    # Standard practice: if one side is -110, the other is typically -110
+    # This is a simplification but works for most cases
+    return vig
+
+# Main analysis function
+def analyze_with_all_engines(parsed_data: List[Dict], bankroll: float) -> Dict[str, Any]:
+    """Run all analysis engines on parsed data"""
+    if not parsed_data:
+        return {
+            'html': '<div class="analysis-block" style="color:#ffdcdc">No valid blocks parsed.</div>',
+            'rec': 'No data',
+            'conf': 'Low'
+        }
+    
+    # Run technical analysis
+    ta_results = ta_engine.analyze_all(parsed_data)
+    
+    # Run betting analysis
+    betting_results = betting_analyzer.analyze_all(parsed_data)
+    
+    # Run recommendations
+    recommendations = recommendations_engine.generate_recommendations(
+        ta_results, 
+        betting_results, 
+        bankroll
+    )
+    
+    # Combine results
+    html = recommendations['html']
+    
+    return {
+        'html': html,
+        'rec': recommendations['rec'],
+        'conf': recommendations['conf']
+    }
+
+# Add custom CSS
 st.markdown("""
 <style>
-    .main-header {
-        font-size: 2.5rem;
-        color: #1f77b4;
-        text-align: center;
-        margin-bottom: 2rem;
+    .stButton>button {
+        background-color: #2dd4bf;
+        color: #042024;
+        font-weight: bold;
+        border-radius: 8px;
+        padding: 10px 20px;
     }
-    .signal-card {
-        padding: 1rem;
-        border-radius: 0.5rem;
-        margin: 0.5rem 0;
-        border-left: 4px solid;
+    .stButton>button:hover {
+        background-color: #28b8a8;
     }
-    .signal-buy {
-        border-color: #28a745;
-        background-color: #f8fff9;
+    .stDataFrame {
+        border-radius: 8px;
+        overflow: hidden;
     }
-    .signal-sell {
-        border-color: #dc3545;
-        background-color: #fff8f8;
+    .stDataFrame th {
+        background-color: #0f3b3a;
+        color: #e6f7f6;
     }
-    .signal-hold {
-        border-color: #ffc107;
-        background-color: #fffef0;
-    }
-    .top-pick {
-        background: linear-gradient(45deg, #ffd700, #ffed4e);
-        padding: 1rem;
-        border-radius: 0.5rem;
-        border: 2px solid #ffc107;
+    .stDataFrame td {
+        background-color: rgba(255,255,255,0.03);
     }
 </style>
 """, unsafe_allow_html=True)
-
-class SportsBettingApp:
-    def __init__(self):
-        self.parser = OddsParser()
-        self.ta_engine = AdvancedTechnicalAnalysis()
-        self.rec_engine = RecommendationsEngine()
-        self.initialize_session_state()
-    
-    def initialize_session_state(self):
-        """Initialize session state variables"""
-        if 'historical_data' not in st.session_state:
-            st.session_state.historical_data = pd.DataFrame()
-        if 'current_recommendations' not in st.session_state:
-            st.session_state.current_recommendations = {}
-        if 'analysis_history' not in st.session_state:
-            st.session_state.analysis_history = []
-    
-    def main(self):
-        """Main application interface"""
-        st.markdown('<div class="main-header">⚡ Omniscience Odds TA Engine</div>', 
-                   unsafe_allow_html=True)
-        
-        # Sidebar for data input
-        with st.sidebar:
-            self.render_sidebar()
-        
-        # Main content area
-        col1, col2 = st.columns([2, 1])
-        
-        with col1:
-            self.render_main_content()
-        
-        with col2:
-            self.render_analysis_panel()
-    
-    def render_sidebar(self):
-        """Render the sidebar controls"""
-        st.header("📊 Data Input")
-        
-        # Feed type selection
-        feed_type = st.selectbox(
-            "Select Feed Type",
-            ["5line", "4line", "splits"],
-            help="Choose the format of your odds data"
-        )
-        
-        # Game information
-        game_name = st.text_input("Game Label", "KC vs BUF")
-        sport_type = st.selectbox("Sport", ["NFL", "NBA", "MLB", "NHL", "NCAAF", "NCAAB"])
-        
-        # Data input
-        st.subheader("Odds Data Input")
-        raw_feed = st.text_area(
-            "Paste Odds Feed Here",
-            height=200,
-            help="Paste your 5-line blocks of odds data"
-        )
-        
-        # Example data for testing
-        with st.expander("Example Format"):
-            st.code("""
-HEADER IGNORE
-2024-01-15 19:30 KC -3.5
--115
-o47.5
--110
-+150 -180
-2024-01-15 16:00 BUF +2.5
--105
-u42.5
--115
-+120 -140
-            """)
-        
-        # Action buttons
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            if st.button("🚀 Parse & Analyze", type="primary", use_container_width=True):
-                self.process_odds_data(game_name, feed_type, raw_feed, sport_type)
-        
-        with col2:
-            if st.button("🔄 Clear Data", use_container_width=True):
-                self.clear_data()
-        
-        # Data management
-        st.subheader("Data Management")
-        if st.button("💾 Save Current Analysis", use_container_width=True):
-            self.save_analysis()
-        
-        if st.button("📊 View History", use_container_width=True):
-            self.view_analysis_history()
-    
-    def process_odds_data(self, game_name: str, feed_type: str, raw_feed: str, sport_type: str):
-        """Process the odds data through the entire pipeline"""
-        try:
-            with st.spinner("🔄 Parsing odds data..."):
-                # Parse the raw feed
-                parsed_data = self.parser.parse_feed(raw_feed)
-                
-                if parsed_data.empty:
-                    st.error("❌ No valid data parsed. Please check your input format.")
-                    return
-            
-            with st.spinner("📈 Running technical analysis..."):
-                # Add to historical data
-                if st.session_state.historical_data.empty:
-                    st.session_state.historical_data = parsed_data
-                else:
-                    st.session_state.historical_data = pd.concat([
-                        st.session_state.historical_data, parsed_data
-                    ], ignore_index=True)
-                
-                # Run TA analysis
-                signals = self.ta_engine.generate_trading_signals(
-                    current_data=parsed_data.iloc[-1].to_dict() if not parsed_data.empty else {},
-                    historical_data=st.session_state.historical_data
-                )
-            
-            with st.spinner("🎯 Generating recommendations..."):
-                # Generate recommendations
-                recommendations = self.rec_engine.generate_comprehensive_recommendations(
-                    signals, st.session_state.historical_data
-                )
-                
-                # Store current recommendations
-                st.session_state.current_recommendations = recommendations
-                
-                # Add to history
-                st.session_state.analysis_history.append({
-                    'timestamp': datetime.now(),
-                    'game': game_name,
-                    'sport': sport_type,
-                    'recommendations': recommendations
-                })
-            
-            st.success("✅ Analysis complete!")
-            
-        except Exception as e:
-            st.error(f"❌ Error processing data: {str(e)}")
-    
-    def render_main_content(self):
-        """Render the main content area"""
-        if not st.session_state.current_recommendations:
-            self.render_welcome_screen()
-        else:
-            self.render_analysis_results()
-    
-    def render_welcome_screen(self):
-        """Render welcome screen when no data is available"""
-        st.markdown("""
-        ## 🎯 Welcome to Omniscience Odds TA
-        
-        This advanced sports betting analysis platform combines:
-        
-        - **Real-time odds parsing** from multiple formats
-        - **Technical analysis** with 15+ indicators
-        - **Machine learning** pattern recognition
-        - **Professional betting recommendations**
-        
-        ### 🚀 Getting Started
-        
-        1. **Select your feed type** in the sidebar
-        2. **Enter game information** (name, sport)
-        3. **Paste your odds data** in the provided format
-        4. **Click 'Parse & Analyze'** to generate recommendations
-        
-        ### 📊 Supported Analysis
-        
-        - **Point Spreads**: Favorite/underdog movement tracking
-        - **Totals**: Over/under market analysis  
-        - **Moneylines**: Probability and value detection
-        - **Vig Analysis**: Market efficiency assessment
-        
-        ### 💡 Pro Tips
-        
-        - Use consistent timestamp formats for best results
-        - Include at least 3-5 data points for meaningful analysis
-        - Monitor line movements over time for pattern recognition
-        """)
-        
-        # Quick start example
-        with st.expander("🎯 Quick Start Example"):
-            st.code("""
-# Sample NFL Odds Data
-HEADER IGNORE
-2024-01-20 20:00 KC -3.5
--110
-o47.5
--110
-+150 -180
-2024-01-20 19:30 BUF +2.5
--105
-u45.5
--115
-+130 -150
-            """)
-    
-    def render_analysis_results(self):
-        """Render the analysis results"""
-        recs = st.session_state.current_recommendations
-        
-        # Top Pick Highlight
-        st.markdown('<div class="top-pick">', unsafe_allow_html=True)
-        st.subheader("🎯 TOP PICK")
-        
-        top_pick = recs.get('top_pick', {})
-        if top_pick:
-            col1, col2, col3 = st.columns(3)
-            
-            with col1:
-                st.metric("Bet Type", top_pick.get('bet_type', '').upper())
-                st.metric("Selection", top_pick.get('selection', ''))
-            
-            with col2:
-                st.metric("Confidence", top_pick.get('confidence', ''))
-                st.metric("Probability", f"{top_pick.get('probability', 0)*100:.1f}%")
-            
-            with col3:
-                st.metric("Risk Level", "LOW" if top_pick.get('probability', 0) > 0.6 else "MEDIUM")
-            
-            # Why top pick
-            st.write("**Why this pick:**")
-            for reason in top_pick.get('why_top_pick', []):
-                st.write(f"• {reason}")
-        
-        st.markdown('</div>', unsafe_allow_html=True)
-        
-        # Executive Summary
-        st.subheader("📊 Executive Summary")
-        st.write(recs.get('executive_summary', ''))
-        
-        # Detailed Recommendations
-        st.subheader("📈 Detailed Recommendations")
-        
-        detailed_recs = recs.get('detailed_recommendations', {})
-        
-        for bet_type, recommendation in detailed_recs.items():
-            self.render_recommendation_card(bet_type.upper(), recommendation)
-    
-    def render_recommendation_card(self, bet_type: str, recommendation: BetRecommendation):
-        """Render individual recommendation card"""
-        # Determine card style based on confidence
-        confidence_class = {
-            "High Confidence": "signal-buy",
-            "Medium Confidence": "signal-hold", 
-            "Low Confidence": "signal-sell"
-        }.get(recommendation.confidence.value, "signal-hold")
-        
-        st.markdown(f'<div class="signal-card {confidence_class}">', unsafe_allow_html=True)
-        
-        col1, col2, col3 = st.columns([2, 1, 1])
-        
-        with col1:
-            st.write(f"**{bet_type}**")
-            st.write(f"*{recommendation.selection}*")
-            
-            # Reasoning
-            with st.expander("Analysis Reasoning"):
-                for reason in recommendation.reasoning:
-                    st.write(f"• {reason}")
-        
-        with col2:
-            st.metric("Confidence", recommendation.confidence.value)
-            st.metric("Probability", f"{recommendation.probability*100:.1f}%")
-        
-        with col3:
-            st.metric("Stake", recommendation.stake_suggestion)
-            st.metric("Risk", recommendation.risk_level)
-        
-        st.markdown('</div>', unsafe_allow_html=True)
-    
-    def render_analysis_panel(self):
-        """Render the right-side analysis panel"""
-        st.subheader("📋 Analysis Panel")
-        
-        if st.session_state.historical_data.empty:
-            st.info("No data available. Process some odds data to see analysis.")
-            return
-        
-        # Current Data Summary
-        with st.expander("📊 Current Data Summary"):
-            data = st.session_state.historical_data
-            st.write(f"**Total Data Points:** {len(data)}")
-            st.write(f"**Date Range:** {data['date'].min()} to {data['date'].max()}")
-            
-            # Quick stats
-            if 'spread' in data.columns:
-                col1, col2 = st.columns(2)
-                with col1:
-                    st.metric("Current Spread", f"{data['spread'].iloc[-1]:.1f}")
-                with col2:
-                    st.metric("Spread Volatility", f"{data['spread'].std():.2f}")
-            
-            if 'total' in data.columns:
-                col1, col2 = st.columns(2)
-                with col1:
-                    st.metric("Current Total", f"{data['total'].iloc[-1]:.1f}")
-                with col2:
-                    st.metric("Total Volatility", f"{data['total'].std():.2f}")
-        
-        # Market Context
-        with st.expander("🌐 Market Context"):
-            if st.session_state.current_recommendations:
-                context = st.session_state.current_recommendations.get('market_context', {})
-                st.write(f"**Volatility:** {context.get('volatility', 'Unknown')}")
-                st.write(f"**Data Points:** {context.get('data_points', 0)}")
-        
-        # Betting Strategy
-        with st.expander("🎯 Betting Strategy"):
-            if st.session_state.current_recommendations:
-                strategy = st.session_state.current_recommendations.get('betting_strategy', {})
-                st.write(f"**Primary Approach:** {strategy.get('primary_approach', '')}")
-                
-                st.write("**Recommended Actions:**")
-                for action in strategy.get('recommended_actions', []):
-                    st.write(f"• {action}")
-        
-        # Quick Actions
-        st.subheader("⚡ Quick Actions")
-        
-        if st.button("📈 View Data Table"):
-            self.show_data_table()
-        
-        if st.button("🔄 Update Analysis"):
-            self.update_analysis()
-        
-        if st.button("💾 Export Results"):
-            self.export_results()
-    
-    def show_data_table(self):
-        """Display the historical data table"""
-        if not st.session_state.historical_data.empty:
-            st.subheader("📋 Historical Data")
-            st.dataframe(st.session_state.historical_data, use_container_width=True)
-    
-    def update_analysis(self):
-        """Update the analysis with current data"""
-        if not st.session_state.historical_data.empty:
-            with st.spinner("Updating analysis..."):
-                signals = self.ta_engine.generate_trading_signals(
-                    current_data=st.session_state.historical_data.iloc[-1].to_dict(),
-                    historical_data=st.session_state.historical_data
-                )
-                
-                recommendations = self.rec_engine.generate_comprehensive_recommendations(
-                    signals, st.session_state.historical_data
-                )
-                
-                st.session_state.current_recommendations = recommendations
-                st.rerun()
-    
-    def export_results(self):
-        """Export results to JSON"""
-        if st.session_state.current_recommendations:
-            import json
-            from datetime import datetime
-            
-            filename = f"betting_analysis_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
-            
-            # Convert to serializable format
-            export_data = json.loads(json.dumps(
-                st.session_state.current_recommendations, 
-                default=str, 
-                indent=2
-            ))
-            
-            st.download_button(
-                label="📥 Download JSON Report",
-                data=json.dumps(export_data, indent=2),
-                file_name=filename,
-                mime="application/json"
-            )
-    
-    def clear_data(self):
-        """Clear all data"""
-        st.session_state.historical_data = pd.DataFrame()
-        st.session_state.current_recommendations = {}
-        st.session_state.analysis_history = []
-        st.rerun()
-    
-    def save_analysis(self):
-        """Save current analysis to history"""
-        if st.session_state.current_recommendations:
-            st.success("Analysis saved to history!")
-    
-    def view_analysis_history(self):
-        """View analysis history"""
-        if st.session_state.analysis_history:
-            st.subheader("📚 Analysis History")
-            
-            for i, analysis in enumerate(st.session_state.analysis_history[::-1]):  # Show latest first
-                with st.expander(f"Analysis {i+1} - {analysis['game']} ({analysis['timestamp'].strftime('%Y-%m-%d %H:%M')})"):
-                    st.write(f"**Sport:** {analysis['sport']}")
-                    st.write(f"**Top Pick:** {analysis['recommendations'].get('top_pick', {}).get('selection', 'N/A')}")
-        
-        else:
-            st.info("No analysis history available.")
-
-def main():
-    """Main application entry point"""
-    app = SportsBettingApp()
-    app.main()
-
-if __name__ == "__main__":
-    main()
