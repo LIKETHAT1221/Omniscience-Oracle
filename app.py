@@ -1,3 +1,4 @@
+# omniscience.py
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -6,20 +7,26 @@ from datetime import datetime
 from typing import List, Dict, Any
 
 # Custom modules
-from odds_utils import american_to_prob, no_vig_prob, american_to_decimal
 from line_movement import track_line_movement
 from ta_engine import TechnicalAnalysisEngine
 from betting_analyzer import BettingAnalyzer
 from recommendations_engine import RecommendationsEngine
 from backtester import Backtester
 
+# Sports-betting package
+from sportsbetting import implied_probability, convert_odds
+
+# ---------------------------
 # Initialize engines
+# ---------------------------
 ta_engine = TechnicalAnalysisEngine()
 betting_analyzer = BettingAnalyzer()
 recommendations_engine = RecommendationsEngine()
 backtester = Backtester()
 
-# Connect to SQLite for persistent storage
+# ---------------------------
+# SQLite setup
+# ---------------------------
 conn = sqlite3.connect("omniscience.db")
 cursor = conn.cursor()
 cursor.execute("""
@@ -33,7 +40,9 @@ CREATE TABLE IF NOT EXISTS analysis_results (
 """)
 conn.commit()
 
+# ---------------------------
 # Streamlit setup
+# ---------------------------
 st.set_page_config(page_title="Omniscience - Enhanced TA Engine", page_icon="📊", layout="wide")
 st.title("Omniscience — Enhanced TA Engine (EV + Kelly + Backtesting)")
 
@@ -48,10 +57,14 @@ Paste odds feed in the format:
 - Line 5: Away ML Home ML
 """)
 
-# Bankroll
+# ---------------------------
+# Bankroll input
+# ---------------------------
 bankroll = st.number_input("Bankroll ($)", value=1000.0, min_value=1.0, step=100.0)
 
-# Raw data input
+# ---------------------------
+# Odds feed input
+# ---------------------------
 st.subheader("Odds Feed Input")
 raw_data = st.text_area(
     "Paste odds data here (first line should be header)",
@@ -59,14 +72,15 @@ raw_data = st.text_area(
     placeholder="time 10/15 12:00PM\nLAC -3.5\n-110\nO 154.5\n-110\n-120 105\n\n"
 )
 
+# ---------------------------
 # Parsing helpers
+# ---------------------------
 def is_header_line(line: str) -> bool:
     return line.lower().startswith("time")
 
 def parse_blocks_strict(raw: str) -> List[Dict]:
     """
     Parse raw odds data into structured format.
-    Preserves spreads/totals as floats and captures ML.
     """
     lines = [l.strip() for l in raw.split("\n") if l.strip()]
     start = 1 if is_header_line(lines[0]) else 0
@@ -76,7 +90,7 @@ def parse_blocks_strict(raw: str) -> List[Dict]:
         block = lines[i:i+5]
         try:
             L1, L2, L3, L4, L5 = block
-            # Timestamp parsing
+            # Timestamp
             date_part, time_part, *team_tokens = L1.split()
             month, day = map(int, date_part.split("/"))
             hour, minute = map(int, time_part[:-2].split(":"))
@@ -98,10 +112,11 @@ def parse_blocks_strict(raw: str) -> List[Dict]:
                 if t.lower() == "even": t = "+100"
                 if ml_away is None: ml_away = float(t)
                 else: ml_home = float(t)
-            # No-vig probabilities
-            spread_no_vig = no_vig_prob(spread_vig, spread_vig)[0] if spread_vig else None
-            total_no_vig = no_vig_prob(total_vig, total_vig)[0] if total_vig else None
-            ml_no_vig = no_vig_prob(ml_away, ml_home) if ml_away and ml_home else None
+            # No-vig probabilities using sports-betting
+            spread_no_vig = implied_probability(spread_vig)
+            total_no_vig = implied_probability(total_vig)
+            ml_no_vig = (implied_probability(ml_away), implied_probability(ml_home)) if ml_away and ml_home else None
+
             rows.append({
                 "time": time, "team": team, "spread": spread, "spread_vig": spread_vig,
                 "total": total, "total_side": total_side, "total_vig": total_vig,
@@ -113,29 +128,38 @@ def parse_blocks_strict(raw: str) -> List[Dict]:
             continue
     return rows
 
-# Analyze button
+# ---------------------------
+# Analyze Button
+# ---------------------------
 if st.button("Analyze"):
     if not raw_data.strip():
         st.error("Please paste odds data first.")
     else:
         parsed_data = parse_blocks_strict(raw_data)
-        # Track line movement
+        # Track line movement for spreads and totals
         parsed_data = track_line_movement(parsed_data, "spread")
         parsed_data = track_line_movement(parsed_data, "total")
-        # Run all engines
+        # Run engines
         ta_results = ta_engine.analyze_all(parsed_data)
         betting_results = betting_analyzer.analyze_all(parsed_data)
         recommendations = recommendations_engine.generate_recommendations(ta_results, betting_results, bankroll)
         # Store results in SQLite
-        cursor.execute("INSERT INTO analysis_results (timestamp, raw_data, rec, conf) VALUES (?, ?, ?, ?)",
-                       (datetime.now().isoformat(), raw_data, recommendations['rec'], recommendations['conf']))
+        cursor.execute(
+            "INSERT INTO analysis_results (timestamp, raw_data, rec, conf) VALUES (?, ?, ?, ?)",
+            (datetime.now().isoformat(), raw_data, recommendations['rec'], recommendations['conf'])
+        )
         conn.commit()
         # Display results
         st.subheader("Analysis Results")
         st.markdown(recommendations['html'], unsafe_allow_html=True)
         st.subheader("Professional Recommendation")
-        st.markdown(f"<div style='background: linear-gradient(90deg,#0a2c3d,#082230);padding:15px;border-radius:8px;border-left:4px solid #7ee3d0;'><h3 style='color:#7ee3d0;margin-top:0'>{recommendations['rec']}</h3><p style='color:#e6f7f6'>Confidence: {recommendations['conf']}</p></div>", unsafe_allow_html=True)
-        # Display parsed preview
+        st.markdown(
+            f"<div style='background: linear-gradient(90deg,#0a2c3d,#082230);padding:15px;border-radius:8px;border-left:4px solid #7ee3d0;'>"
+            f"<h3 style='color:#7ee3d0;margin-top:0'>{recommendations['rec']}</h3>"
+            f"<p style='color:#e6f7f6'>Confidence: {recommendations['conf']}</p></div>",
+            unsafe_allow_html=True
+        )
+        # Display parsed preview with momentum
         st.subheader("Parsed Data with Line Movement")
         preview_df = pd.DataFrame([
             {
@@ -164,7 +188,9 @@ if st.button("Analyze"):
             'Total Δ','Total Momentum','Total Momentum (Smooth)'
         ]), use_container_width=True)
 
-# Backtesting button
+# ---------------------------
+# Backtesting Button
+# ---------------------------
 if st.button("Run Backtest"):
     if not raw_data.strip():
         st.error("Please paste odds data first.")
