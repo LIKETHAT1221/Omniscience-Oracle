@@ -1,25 +1,28 @@
 # omniscience.py
+import sys
+import os
+
+# ---------------------------
+# Ensure current folder is in Python path
+# ---------------------------
+sys.path.append(os.path.dirname(__file__))
+
 import streamlit as st
 import pandas as pd
 import numpy as np
-import sqlite3
 from datetime import datetime
 from typing import List, Dict, Any
+import sqlite3
 
 # ---------------------------
-# Absolute imports for standalone Streamlit execution
+# Absolute imports for custom modules
 # ---------------------------
-from line_movement import track_line_movement
 from backtester import Backtester
+from line_movement import track_line_movement
 from ta_engine import TechnicalAnalysisEngine
 from betting_analyzer import BettingAnalyzer
 from recommendations_engine import RecommendationsEngine
 from odds_utils import american_to_prob, no_vig_prob, american_to_decimal, decimal_to_american
-
-# ---------------------------
-# Sports-betting package
-# ---------------------------
-from sportsbetting import implied_probability, convert_odds
 
 # ---------------------------
 # Initialize engines
@@ -84,9 +87,6 @@ def is_header_line(line: str) -> bool:
     return line.lower().startswith("time")
 
 def parse_blocks_strict(raw: str) -> List[Dict]:
-    """
-    Parse raw odds data into structured format.
-    """
     lines = [l.strip() for l in raw.split("\n") if l.strip()]
     start = 1 if is_header_line(lines[0]) else 0
     rows = []
@@ -117,10 +117,10 @@ def parse_blocks_strict(raw: str) -> List[Dict]:
                 if t.lower() == "even": t = "+100"
                 if ml_away is None: ml_away = float(t)
                 else: ml_home = float(t)
-            # No-vig probabilities using sports-betting
-            spread_no_vig = implied_probability(spread_vig)
-            total_no_vig = implied_probability(total_vig)
-            ml_no_vig = (implied_probability(ml_away), implied_probability(ml_home)) if ml_away and ml_home else None
+            # No-vig probabilities
+            spread_no_vig = american_to_prob(spread_vig)
+            total_no_vig = american_to_prob(total_vig)
+            ml_no_vig = (american_to_prob(ml_away), american_to_prob(ml_home)) if ml_away and ml_home else None
 
             rows.append({
                 "time": time, "team": team, "spread": spread, "spread_vig": spread_vig,
