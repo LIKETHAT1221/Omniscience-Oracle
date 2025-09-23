@@ -6,14 +6,29 @@ import sqlite3
 from datetime import datetime
 from typing import List, Dict, Any
 
-# Custom modules
-from line_movement import track_line_movement
-from ta_engine import TechnicalAnalysisEngine
-from betting_analyzer import BettingAnalyzer
-from recommendations_engine import RecommendationsEngine
-from backtester import Backtester
+# ---------------------------
+# Custom modules (handles both standalone and package mode)
+# ---------------------------
+try:
+    # Standalone mode (files in the same folder)
+    from line_movement import track_line_movement
+    from backtester import Backtester
+    from ta_engine import TechnicalAnalysisEngine
+    from betting_analyzer import BettingAnalyzer
+    from recommendations_engine import RecommendationsEngine
+    from odds_utils import american_to_prob, no_vig_prob, american_to_decimal, decimal_to_american
+except ImportError:
+    # Package mode (folder treated as a package)
+    from .line_movement import track_line_movement
+    from .backtester import Backtester
+    from .ta_engine import TechnicalAnalysisEngine
+    from .betting_analyzer import BettingAnalyzer
+    from .recommendations_engine import RecommendationsEngine
+    from .odds_utils import american_to_prob, no_vig_prob, american_to_decimal, decimal_to_american
 
+# ---------------------------
 # Sports-betting package
+# ---------------------------
 from sportsbetting import implied_probability, convert_odds
 
 # ---------------------------
@@ -136,9 +151,9 @@ if st.button("Analyze"):
         st.error("Please paste odds data first.")
     else:
         parsed_data = parse_blocks_strict(raw_data)
-        # Track line movement for spreads and totals
-        parsed_data = track_line_movement(parsed_data, "spread")
-        parsed_data = track_line_movement(parsed_data, "total")
+        # Track line movement for spreads and totals (5-period smoothing)
+        parsed_data = track_line_movement(parsed_data, "spread", smooth_window=5)
+        parsed_data = track_line_movement(parsed_data, "total", smooth_window=5)
         # Run engines
         ta_results = ta_engine.analyze_all(parsed_data)
         betting_results = betting_analyzer.analyze_all(parsed_data)
