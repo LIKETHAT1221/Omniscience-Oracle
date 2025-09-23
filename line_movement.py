@@ -1,50 +1,47 @@
 # line_movement.py
-from typing import List, Dict, Optional
+from typing import List, Dict
+import pandas as pd
 
-def calculate_delta(current: float, previous: float) -> float:
+def track_line_movement(data: List[Dict], field: str, smooth_window: int = 5) -> List[Dict]:
     """
-    Calculate the raw delta between two spreads/totals.
-    Negative values preserved correctly.
-    Example:
-      -3.5 → -2.5 = +1.0 (line moving toward underdog)
-      45.5 → 46.5 = +1.0 (line moving toward the over)
-    """
-    if current is None or previous is None:
-        return 0.0
-    return current - previous
+    Track delta, momentum, and smoothed momentum for spreads or totals.
 
-
-def calculate_momentum(history: List[float]) -> float:
-    """
-    Momentum = average directional delta across history.
-    Positive = moving toward underdog/over
-    Negative = moving toward favorite/under
-    """
-    if not history or len(history) < 2:
-        return 0.0
-    deltas = [calculate_delta(history[i], history[i-1]) for i in range(1, len(history))]
-    return sum(deltas) / len(deltas)
-
-
-def track_line_movement(data: List[Dict], key: str) -> List[Dict]:
-    """
-    Annotate parsed odds data with delta & momentum for spreads/totals.
     Args:
-      data: List of parsed odds rows (from parse_blocks_strict)
-      key: 'spread' or 'total'
+        data: List of parsed data blocks (dictionaries)
+        field: "spread" or "total"
+        smooth_window: Window size for smoothed momentum
+
     Returns:
-      Same list, with 'delta' and 'momentum' fields added.
+        Updated list of dictionaries with added keys:
+        - {field}_delta
+        - {field}_momentum
+        - {field}_momentum_smooth
     """
-    history = []
-    for row in data:
-        val = row.get(key)
-        if val is None:
-            row[f"{key}_delta"] = 0.0
-            row[f"{key}_momentum"] = 0.0
+    # Extract the values
+    values = [row.get(field) for row in data]
+
+    # Compute delta and momentum
+    deltas = [None]  # first delta is None
+    momentum = [None]  # first momentum is None
+
+    for i in range(1, len(values)):
+        if values[i] is None or values[i-1] is None:
+            deltas.append(None)
+            momentum.append(None)
         else:
-            prev = history[-1] if history else None
-            delta = calculate_delta(val, prev) if prev is not None else 0.0
-            history.append(val)
-            row[f"{key}_delta"] = delta
-            row[f"{key}_momentum"] = calculate_momentum(history)
+            delta = values[i] - values[i-1]
+            deltas.append(delta)
+            # Momentum is sum of previous delta + current
+            prev_momentum = momentum[i-1] if momentum[i-1] is not None else 0
+            momentum.append(prev_momentum + delta)
+
+    # Smoothed momentum using rolling mean
+    smoothed = pd.Series(momentum).rolling(window=smooth_window, min_periods=1).mean().tolist()
+
+    # Store in data
+    for i, row in enumerate(data):
+        row[f"{field}_delta"] = deltas[i]
+        row[f"{field}_momentum"] = momentum[i]
+        row[f"{field}_momentum_smooth"] = smoothed[i]
+
     return data
