@@ -7,24 +7,14 @@ from datetime import datetime
 from typing import List, Dict, Any
 
 # ---------------------------
-# Custom modules (handles both standalone and package mode)
+# Absolute imports for standalone Streamlit execution
 # ---------------------------
-try:
-    # Standalone mode (files in the same folder)
-    from line_movement import track_line_movement
-    from backtester import Backtester
-    from ta_engine import TechnicalAnalysisEngine
-    from betting_analyzer import BettingAnalyzer
-    from recommendations_engine import RecommendationsEngine
-    from odds_utils import american_to_prob, no_vig_prob, american_to_decimal, decimal_to_american
-except ImportError:
-    # Package mode (folder treated as a package)
-    from .line_movement import track_line_movement
-    from .backtester import Backtester
-    from .ta_engine import TechnicalAnalysisEngine
-    from .betting_analyzer import BettingAnalyzer
-    from .recommendations_engine import RecommendationsEngine
-    from .odds_utils import american_to_prob, no_vig_prob, american_to_decimal, decimal_to_american
+from line_movement import track_line_movement
+from backtester import Backtester
+from ta_engine import TechnicalAnalysisEngine
+from betting_analyzer import BettingAnalyzer
+from recommendations_engine import RecommendationsEngine
+from odds_utils import american_to_prob, no_vig_prob, american_to_decimal, decimal_to_american
 
 # ---------------------------
 # Sports-betting package
