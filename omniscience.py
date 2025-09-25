@@ -19,7 +19,7 @@ import sqlite3
 # ---------------------------
 # Absolute imports for custom modules
 # ---------------------------
-from backtester import backtester
+from backtester import Backtester
 from line_movement import track_line_movement
 from ta_engine import TechnicalAnalysisEngine
 from betting_analyzer import BettingAnalyzer
